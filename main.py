@@ -133,32 +133,7 @@ def init_db():
             """
         )
 
-        default_items = [
-            ("title_master", "Титул 'Мастер Блефа'", "title", 50, "Отображается в профиле над именем"),
-            ("title_legend", "Титул 'Легенда'", "title", 100, "Престижный титул для опытных игроков"),
-            ("title_magnate", "Титул 'Бэриковый Магнат 🚬'", "title", 150, "Для тех, кто уже всё выкурил"),
-            ("skin_gold", "Скин карт 'Золотой'", "skin", 30, "Золотая рубашка карт в игре"),
-            ("skin_neon", "Скин карт 'Неоновый'", "skin", 40, "Яркий неоновый стиль для карт"),
-            ("skin_cyber", "Скин карт 'Киберпанк'", "skin", 60, "Неоновый фиолетово-голубой градиент профиля"),
-            ("skin_street", "Скин карт 'Уличный Неон'", "skin", 60, "Тёмно-синий с розовым неоном"),
-        ]
-        for item in default_items:
-            db.execute("INSERT OR IGNORE INTO shop VALUES (?, ?, ?, ?, ?)", item)
-
-        db.execute(
-            "UPDATE shop SET name = ? WHERE item_id = 'title_magnate'",
-            ("Титул 'Бэриковый Магнат 🚬'",),
-        )
-        db.execute(
-            "UPDATE users SET equipped_title = ? WHERE equipped_title IN (?, ?, ?)",
-            (
-                "Титул 'Бэриковый Магнат 🚬'",
-                "Титул 'Бэриковый Магнат'",
-                "Бэриковый Магнат",
-                "Бэриковый Магнат 🚬",
-            ),
-        )
-
+        # перенос владений из legacy-таблицы (должен идти ДО чистки дубликатов)
         tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         if "user_inventory" in tables:
             db.execute(
@@ -167,6 +142,121 @@ def init_db():
                 SELECT user_id, item_id, is_equipped FROM user_inventory
                 """
             )
+
+        default_items = [
+            ("title_master", "Титул 'Мастер Блефа' 🎯", "title", 50, "Отображается в профиле над именем"),
+            ("title_legend", "Титул 'Легенда' 🏆", "title", 100, "Престижный титул для опытных игроков"),
+            ("title_magnate", "Титул 'Бэриковый Магнат 🚬'", "title", 150, "Для тех, кто уже всё выкурил"),
+            ("skin_gold", "Скин карт 'Золотой' 🥇", "skin", 300, "Золотая рубашка карт в игре"),
+            ("skin_cyber", "Скин карт 'Киберпанк' ⚡", "skin", 600, "Неоновый фиолетово-голубой градиент профиля"),
+            ("skin_street", "Скин карт 'Уличный Неон' 🌃", "skin", 600, "Тёмно-синий с розовым неоном"),
+        ]
+        for item in default_items:
+            db.execute("INSERT OR IGNORE INTO shop VALUES (?, ?, ?, ?, ?)", item)
+
+        # синхронизация названий товаров с БД (эмодзи применяются и к старым записям)
+        canonical_names = {
+            "title_master": "Титул 'Мастер Блефа' 🎯",
+            "title_legend": "Титул 'Легенда' 🏆",
+            "title_magnate": "Титул 'Бэриковый Магнат 🚬'",
+            "skin_gold": "Скин карт 'Золотой' 🥇",
+            "skin_cyber": "Скин карт 'Киберпанк' ⚡",
+            "skin_street": "Скин карт 'Уличный Неон' 🌃",
+        }
+        old_to_new_names = {
+            "Титул 'Мастер Блефа'": "Титул 'Мастер Блефа' 🎯",
+            "Титул 'Легенда'": "Титул 'Легенда' 🏆",
+            "Титул 'Бэриковый Магнат'": "Титул 'Бэриковый Магнат 🚬'",
+            "Титул 'Бэриковый Магнат 🚬'": "Титул 'Бэриковый Магнат 🚬'",
+            "Скин карт 'Золотой'": "Скин карт 'Золотой' 🥇",
+            "Скин карт 'Киберпанк'": "Скин карт 'Киберпанк' ⚡",
+            "Скин карт 'Уличный Неон'": "Скин карт 'Уличный Неон' 🌃",
+        }
+        for item_id, new_name in canonical_names.items():
+            db.execute("UPDATE shop SET name = ? WHERE item_id = ?", (new_name, item_id))
+        for old_name, new_name in old_to_new_names.items():
+            db.execute(
+                "UPDATE users SET equipped_title = ? WHERE equipped_title = ?",
+                (new_name, old_name),
+            )
+            db.execute(
+                "UPDATE users SET equipped_card_skin = ? WHERE equipped_card_skin = ?",
+                (new_name, old_name),
+            )
+
+        db.execute(
+            "UPDATE shop SET name = ? WHERE item_id = 'title_magnate'",
+            ("Титул 'Бэриковый Магнат 🚬'",),
+        )
+
+        # --- чистка магазина: legacy-дубликаты сливаем в актуальные товары ---
+        legacy_merges = {
+            "title_barik_magnate": "title_magnate",
+            "skin_street_neon": "skin_street",
+            "skin_gold_cyber": "skin_cyber",
+            "skin_neon": "skin_cyber",
+        }
+        for old_id, new_id in legacy_merges.items():
+            db.execute(
+                "INSERT OR IGNORE INTO inventory (user_id, item_id, is_equipped) "
+                "SELECT user_id, ?, 0 FROM inventory WHERE item_id = ?",
+                (new_id, old_id),
+            )
+            db.execute("DELETE FROM inventory WHERE item_id = ?", (old_id,))
+            db.execute("DELETE FROM shop WHERE item_id = ?", (old_id,))
+
+        # единый стиль названий для оставшихся legacy-титулов
+        db.execute(
+            "UPDATE shop SET name = ? WHERE item_id = 'title_live_master'",
+            ("Титул 'Мастер Лайва'",),
+        )
+        db.execute(
+            "UPDATE shop SET name = ? WHERE item_id = 'title_bluff_king'",
+            ("Титул 'Король Блефа'",),
+        )
+
+        # переименования старых названий в профилях игроков
+        renames = {
+            "Титул 'Бэриковый Магнат'": "Титул 'Бэриковый Магнат 🚬'",
+            "Бэриковый Магнат": "Титул 'Бэриковый Магнат 🚬'",
+            "Бэриковый Магнат 🚬": "Титул 'Бэриковый Магнат 🚬'",
+            "🚬 Бэриковый Магнат": "Титул 'Бэриковый Магнат 🚬'",
+            "🕵️ Мастер Лайва": "Титул 'Мастер Лайва'",
+            "👑 Король Блефа": "Титул 'Король Блефа'",
+            "🌃 Уличный Неон": "Скин карт 'Уличный Неон' 🌃",
+            "⚡ Киберпанк Голд": "Скин карт 'Киберпанк' ⚡",
+            "Скин карт 'Неоновый'": "Скин карт 'Киберпанк' ⚡",
+        }
+        for old_name, new_name in renames.items():
+            db.execute(
+                "UPDATE users SET equipped_title = ? WHERE equipped_title = ?",
+                (new_name, old_name),
+            )
+            db.execute(
+                "UPDATE users SET equipped_card_skin = ? WHERE equipped_card_skin = ?",
+                (new_name, old_name),
+            )
+
+        # is_equipped приводим в порядок: надето ровно то, что указано в профиле
+        db.execute("UPDATE inventory SET is_equipped = 0")
+        db.execute(
+            """
+            UPDATE inventory SET is_equipped = 1
+            WHERE EXISTS (
+                SELECT 1 FROM shop s
+                WHERE s.item_id = inventory.item_id
+                  AND (
+                        (s.category = 'title' AND s.name = (
+                            SELECT u.equipped_title FROM users u WHERE u.user_id = inventory.user_id
+                        ))
+                     OR (s.category = 'skin' AND s.name = (
+                            SELECT u.equipped_card_skin FROM users u WHERE u.user_id = inventory.user_id
+                        ))
+                  )
+            )
+            """
+        )
+
         db.commit()
 
 
@@ -411,7 +501,7 @@ def render_profile_html(
         </div>
         <div class="balance-box">
           <div class="balance-label">Баланс</div>
-          <div class="balance-value">{balance}🚬 B</div>
+          <div class="balance-value">{balance}🚬</div>
         </div>
       </div>
       <div class="stats-grid">
@@ -490,6 +580,15 @@ async def generate_profile_card(
             profile_card_cache[user_id] = (img_path, time.time())
 
         return img_path
+
+
+def invalidate_profile_cache(user_id: int) -> None:
+    entry = profile_card_cache.pop(user_id, None)
+    if entry and os.path.exists(entry[0]):
+        try:
+            os.remove(entry[0])
+        except OSError:
+            pass
 
 
 async def is_subscribed(user_id: int) -> bool:
@@ -665,18 +764,30 @@ async def start_turn(game: Game, chat_id: int):
     game.phase = "play"
     game.waiting_challenge = False
     mention = html.escape(player.name)
+
+    # Одно большое сообщение с ходом + подсказкой про /карты
     await bot.send_message(
         chat_id,
-        f"Ход игрока <b>{mention}</b>. Карты отправлены в личку. Нужно положить 1–{MAX_PLAY_CARDS} карты и назвать номинал.",
+        f"🎲 <b>Ход игрока {mention}</b>\n\n"
+        f"Нужно положить 1–{MAX_PLAY_CARDS} карты лицом вниз и назвать номинал.\n\n"
+        f"📌 {mention}, если карты <b>не пришли</b> в личку — открой бота и напиши ему "
+        f"команду <b>/карты</b>.",
     )
+
     ok = await send_hand(
         player,
-        f"Твои карты ({len(player.cards)}). Выбери от 1 до {MAX_PLAY_CARDS} и нажми «Сыграть выбранные».",
+        f"Твои карты ({len(player.cards)}). "
+        f"Выбери от 1 до {MAX_PLAY_CARDS} и нажми «Сыграть выбранные».\n\n"
+        f"Если что — всегда можно написать /карты ещё раз.",
     )
+
     if not ok:
         await bot.send_message(
             chat_id,
-            f"{mention}, напиши боту /start в личке, иначе не получится выбрать карты.",
+            f"⚠️ <b>{mention}</b>, я не могу написать тебе в личку.\n\n"
+            f"Открой бота в личке и напиши ему <b>/start</b>. "
+            f"Потом можешь повторить свои карты командой <b>/карты</b> — "
+            f"иначе не получится сделать ход.",
         )
 
 
@@ -695,18 +806,22 @@ async def finish_game(game: Game, winner: Player, chat_id: int):
 
 
 async def after_play(game: Game, player: Player, claim: str, chat_id: int):
+
     responder = game.players[game.responder]
     await bot.send_message(
         chat_id,
-        f"<b>{html.escape(player.name)}</b> кладёт {len(game.last_cards)} карт(ы) как "
-        f"<b>{RANK_NAMES.get(claim, claim)}</b>.\n"
-        f"Отвечает <b>{html.escape(responder.name)}</b>.",
+        f"🃏 <b>{html.escape(player.name)}</b> кладёт {len(game.last_cards)} карт(ы) как "
+        f"<b>{RANK_NAMES.get(claim, claim)}</b>.\n\n"
+        f"👉 Отвечает <b>{html.escape(responder.name)}</b>: <b>Верю</b> или <b>Не верю</b>.\n\n"
+        f"📌 <b>{html.escape(responder.name)}</b>, если после ответа тебе не придут "
+        f"твои карты — напиши боту в личку <b>/карты</b>.",
         reply_markup=challenge_kb(),
     )
     if not player.cards:
         await bot.send_message(
             chat_id,
-            f"{html.escape(player.name)} сбросил последнюю карту. Если ему поверят или блеф не подтвердится — победа.",
+            f"⚡ <b>{html.escape(player.name)}</b> сбросил последнюю карту. "
+            f"Если ему поверят или блеф не подтвердится — победа.",
         )
 
 
@@ -724,7 +839,7 @@ async def cmd_start(msg: Message):
         "Это бот игры «Блеф».\n"
         "Команды:\n"
         "🥰/profile — карточка профиля\n"
-        "🤑/shop — магазин титулов и скинов\n"
+        "🛒/shop — магазин титулов и скинов\n"
         "🎒/inventory — инвентарь\n"
         "💰/balance — баланс бэриков\n"
         "♠️ /newgame — создать игру в групповом чате\n"
@@ -781,15 +896,78 @@ async def cmd_balance(msg: Message):
     await msg.answer(f"💰 Твой баланс: <b>{bal}</b> бэриков")
 
 
+SHOP_CATEGORY_ICONS = {"skin": "🎴", "title": "🏆", "other": "🎁"}
+SHOP_CATEGORY_TITLES = {"skin": "Скины карт", "title": "Титулы", "other": "Прочее"}
+
+
+def shop_group(category: str) -> str:
+    return category if category in ("skin", "title") else "other"
+
+
+def shop_menu_view() -> Tuple[str, InlineKeyboardMarkup]:
+    counts: Dict[str, int] = {}
+    for row in get_shop_items():
+        key = shop_group(row["category"])
+        counts[key] = counts.get(key, 0) + 1
+    kb = [
+        [
+            InlineKeyboardButton(
+                text=f"{SHOP_CATEGORY_ICONS[key]} {SHOP_CATEGORY_TITLES[key]} ({counts[key]})",
+                callback_data=f"shopcat:{key}",
+            )
+        ]
+        for key in ("skin", "title", "other")
+        if counts.get(key)
+    ]
+    return "🛒 <b>Магазин</b>\n\nВыбери категорию:", InlineKeyboardMarkup(inline_keyboard=kb)
+
+
+def shop_category_view(user_id: int, group: str) -> Tuple[str, InlineKeyboardMarkup]:
+    icon = SHOP_CATEGORY_ICONS[group]
+    owned = {row["item_id"] for row in get_user_inventory(user_id)}
+    items = [row for row in get_shop_items() if shop_group(row["category"]) == group]
+    text = f"{icon} <b>{SHOP_CATEGORY_TITLES[group]}</b>\n\n"
+    kb = []
+    for row in items:
+        mark = " ✅" if row["item_id"] in owned else ""
+        text += f"{icon} <b>{html.escape(row['name'])}</b>{mark} — <b>{row['price']}</b> 🚬\n"
+        if row["description"]:
+            text += f"   <i>{html.escape(row['description'])}</i>\n"
+        text += "\n"
+        kb.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{icon} {row['name']} — {row['price']} 🚬{mark}",
+                    callback_data=f"buy_{row['item_id']}",
+                )
+            ]
+        )
+    kb.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="shopcat:menu")])
+    return text, InlineKeyboardMarkup(inline_keyboard=kb)
+
+
 @dp.message(Command("shop"))
 async def cmd_shop(msg: Message):
     ensure_user(msg.from_user.id, msg.from_user.full_name)
-    items = get_shop_items()
-    kb = [
-        [InlineKeyboardButton(text=f"{row['name']} — {row['price']} 🚬", callback_data=f"buy_{row['item_id']}")]
-        for row in items
-    ]
-    await msg.answer("🛒 Магазин. Выбери предмет:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    text, markup = shop_menu_view()
+    await msg.answer(text, reply_markup=markup)
+
+
+@dp.callback_query(F.data.startswith("shopcat:"))
+async def cb_shop_category(call: CallbackQuery):
+    group = call.data.split(":", 1)[1]
+    if group == "menu":
+        text, markup = shop_menu_view()
+    elif group in SHOP_CATEGORY_ICONS:
+        text, markup = shop_category_view(call.from_user.id, group)
+    else:
+        await call.answer("Категория не найдена.", show_alert=True)
+        return
+    try:
+        await call.message.edit_text(text, reply_markup=markup)
+    except TelegramBadRequest:
+        await call.message.answer(text, reply_markup=markup)
+    await call.answer()
 
 
 @dp.callback_query(F.data.startswith("buy_"))
@@ -812,23 +990,38 @@ async def cb_buy_item(call: CallbackQuery):
         await call.answer("Товар не найден!", show_alert=True)
         return
     if has_item:
-        await call.answer("Этот предмет уже куплен.", show_alert=True)
+        await call.answer("Этот предмет уже куплен. Надень его в /inventory.", show_alert=True)
+        return
+    if not spend_bariki(user_id, call.from_user.full_name, item["price"]):
+        await call.answer("❌ Недостаточно бэриков 🚬! Пополни баланс: /balance", show_alert=True)
         return
 
-    if spend_bariki(user_id, call.from_user.full_name, item["price"]):
-        with db_lock:
-            db.execute(
-                "INSERT INTO inventory (user_id, item_id, is_equipped) VALUES (?, ?, 0)",
-                (user_id, item_id),
-            )
-            db.commit()
-        await call.answer(f"Куплено: {item['name']}", show_alert=True)
-        await call.message.edit_text(
-            f"✅ Куплено: <b>{html.escape(item['name'])}</b> за {item['price']} бэриков.\n"
-            f"Экипировка: /inventory"
+    # покупка сразу применяется к профилю: предмет надевается автоматически
+    category = item["category"]
+    with db_lock:
+        db.execute(
+            "UPDATE inventory SET is_equipped = 0 "
+            "WHERE user_id = ? AND item_id IN (SELECT item_id FROM shop WHERE category = ?)",
+            (user_id, category),
         )
-    else:
-        await call.answer("Недостаточно бэриков!", show_alert=True)
+        db.execute(
+            "INSERT INTO inventory (user_id, item_id, is_equipped) VALUES (?, ?, 1)",
+            (user_id, item_id),
+        )
+        if category == "title":
+            db.execute("UPDATE users SET equipped_title = ? WHERE user_id = ?", (item["name"], user_id))
+        elif category == "skin":
+            db.execute("UPDATE users SET equipped_card_skin = ? WHERE user_id = ?", (item["name"], user_id))
+        db.commit()
+
+    invalidate_profile_cache(user_id)
+    await call.answer(f"✅ Куплено и надето: {item['name']}", show_alert=True)
+
+    text, markup = shop_category_view(user_id, shop_group(category))
+    try:
+        await call.message.edit_text(text, reply_markup=markup)
+    except TelegramBadRequest:
+        await call.message.answer(text, reply_markup=markup)
 
 
 def inventory_view(user_id: int) -> Tuple[str, Optional[InlineKeyboardMarkup]]:
@@ -907,6 +1100,7 @@ async def cb_equip_item(call: CallbackQuery):
             await call.answer(f"Надето: {item_name}", show_alert=True)
         db.commit()
 
+    invalidate_profile_cache(user_id)
     text, markup = inventory_view(user_id)
     try:
         await call.message.edit_text(text, reply_markup=markup)
