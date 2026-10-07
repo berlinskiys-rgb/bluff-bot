@@ -5,6 +5,7 @@ import os
 import random
 import sqlite3
 import tempfile
+import time
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -439,24 +440,56 @@ async def generate_profile_card(
     wins: int,
     title: str,
     skin: str = "Классическая",
+    user_id: Optional[int] = None,
 ) -> str:
-    html_body, css = render_profile_html(username, balance, games, wins, title, skin)
-    filename = f"profile_{uuid.uuid4().hex}.png"
+    # Проверяем кэш (только если передан user_id)
+    if user_id is not None:
+        cached = profile_card_cache.get(user_id)
+        if cached:
+            cached_path, cached_time = cached
+            if time.time() - cached_time < CACHE_TTL and os.path.exists(cached_path):
+                log.info("Profile card cache hit for user %s", user_id)
+                return cached_path
 
-    def _render():
-        engine = get_hti()
-        paths = engine.screenshot(
-            html_str=html_body,
-            css_str=css,
-            save_as=filename,
-            size=(620, 360),
-        )
-        if paths:
-            return paths[0]
-        return os.path.join(engine.output_path, filename)
+    # Ограничиваем: не более 2 одновременных рендеров Chromium
+    async with render_semaphore:
+        # Ещё раз проверяем кэш — вдруг другая корутина его уже заполнила
+        if user_id is not None:
+            cached = profile_card_cache.get(user_id)
+            if cached:
+                cached_path, cached_time = cached
+                if time.time() - cached_time < CACHE_TTL and os.path.exists(cached_path):
+                    return cached_path
 
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, _render)
+        html_body, css = render_profile_html(username, balance, games, wins, title, skin)
+        filename = f"profile_{uuid.uuid4().hex}.png"
+
+        def _render():
+            engine = get_hti()
+            paths = engine.screenshot(
+                html_str=html_body,
+                css_str=css,
+                save_as=filename,
+                size=(620, 360),
+            )
+            if paths:
+                return paths[0]
+            return os.path.join(engine.output_path, filename)
+
+        loop = asyncio.get_running_loop()
+        img_path = await loop.run_in_executor(None, _render)
+
+        # Сохраняем в кэш
+        if user_id is not None:
+            old = profile_card_cache.get(user_id)
+            if old and os.path.exists(old[0]) and old[0] != img_path:
+                try:
+                    os.remove(old[0])
+                except OSError:
+                    pass
+            profile_card_cache[user_id] = (img_path, time.time())
+
+        return img_path
 
 
 async def is_subscribed(user_id: int) -> bool:
@@ -549,6 +582,9 @@ class Game:
 
 games: Dict[int, Game] = {}
 user_chat: Dict[int, int] = {}
+render_semaphore = asyncio.Semaphore(2)
+profile_card_cache: Dict[int, tuple] = {}  # user_id -> (путь_к_png, время_создания)
+CACHE_TTL = 300  # 5 минут — столько живёт закэшированная карточка
 
 
 def lobby_kb() -> InlineKeyboardMarkup:
@@ -721,11 +757,12 @@ async def cmd_profile(msg: Message):
     )
     try:
         img_path = await generate_profile_card(
-            username, balance, games_played, wins, title, skin
+            username, balance, games_played, wins, title, skin,
+            user_id=msg.from_user.id,
         )
         await msg.answer_photo(photo=FSInputFile(img_path), caption=caption)
-        if os.path.exists(img_path):
-            os.remove(img_path)
+        # Файл не удаляем — он лежит в кэше для повторного использования
+
     except Exception as exc:
         log.exception("Profile card error: %s", exc)
         await msg.answer(caption)
