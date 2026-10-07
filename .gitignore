@@ -1,0 +1,15 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+database.db
+*.db
+*.log
+.env
+.idea/
+.vscode/
+_dump_shop.py
+_dump_*.json
+_*.json
+_*.py
+*.json
