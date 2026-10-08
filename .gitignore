@@ -1,15 +1,16 @@
+# окружение и секреты
+.env
 .venv/
 venv/
+# мусор Python
 __pycache__/
 *.pyc
-database.db
+# базы данных и логи (в них реальные данные игроков!)
 *.db
+*.sqlite
 *.log
-.env
+# редакторы и временные файлы
 .idea/
 .vscode/
-_dump_shop.py
-_dump_*.json
-_*.json
 _*.py
-*.json
+_*.json
